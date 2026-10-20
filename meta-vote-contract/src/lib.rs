@@ -21,6 +21,8 @@ mod constants;
 mod deposit;
 mod evm_delegate;
 mod internal;
+#[cfg(test)]
+mod tests_max_voting_positions;
 mod locking_position;
 mod migrate;
 mod timestamp_utils;
@@ -680,8 +682,12 @@ impl MetaVoteContract {
             voter.available_voting_power,
             voting_power
         );
+        // vote_positions has one entry per contract_address: adding votes to an existing entry
+        // never creates a new position, a new entry is only allowed below the limit
+        // (the former `<=` let a voter hold one position more than configured)
         assert!(
-            voter.vote_positions.len() <= self.max_voting_positions as u64,
+            voter.vote_positions.get(contract_address).is_some()
+                || voter.vote_positions.len() < self.max_voting_positions as u64,
             "Cannot exceed {} voting positions.",
             self.max_voting_positions
         );
