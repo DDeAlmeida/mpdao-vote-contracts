@@ -1,6 +1,43 @@
 use crate::*;
 use near_sdk::{assert_one_yocto, near_bindgen, PromiseOrValue};
 
+/// Storage deposit attached to pre_delegate_evm_address, refunded when the pre-delegation is
+/// removed or confirmed by the operator. Before, the contract paid the storage of every entry.
+pub const PRE_DELEGATE_DEPOSIT: u128 = ONE_NEAR / 100; // 0.01 NEAR
+
+/// Reserved key space inside timestamp_storage, marks the pre-delegations that paid the deposit
+/// (entries created before this change did not, and must not be refunded)
+const PRE_DELEGATION_PAID_KEY: &str = "evm-pre-delegation-paid";
+
+impl MetaVoteContract {
+    fn pre_delegation_paid_key(evm_address: &String) -> CryptoHash {
+        Self::compose_key(
+            evm_address,
+            &PRE_DELEGATION_PAID_KEY.to_string(),
+            &String::new(),
+        )
+    }
+
+    /// Returns the storage deposit of a pre-delegation to the account that paid it. Does nothing
+    /// for pre-delegations created before the deposit existed.
+    fn refund_pre_delegation_deposit(&mut self, evm_address: &String) {
+        let key = Self::pre_delegation_paid_key(evm_address);
+        if self.timestamp_storage.get(&key).is_none() {
+            return;
+        }
+        self.timestamp_storage.remove(&key);
+        let payer = self
+            .evm_pre_delegation
+            .get(evm_address)
+            .map(|pre_delegation| pre_delegation.0.clone());
+        if let Some(payer) = payer {
+            if let Ok(account_id) = payer.parse::<AccountId>() {
+                Promise::new(account_id).transfer(PRE_DELEGATE_DEPOSIT);
+            }
+        }
+    }
+}
+
 #[near_bindgen]
 impl MetaVoteContract {
     // ************************
@@ -11,13 +48,24 @@ impl MetaVoteContract {
     /// called from the user account, with a ECDSA signature (ethereum signatures & the evm account)
     /// if confirmed by the operator, it moves to "delegated"
     pub fn pre_delegate_evm_address(&mut self, evm_address: String, signature: String) {
-        assert_one_yocto();
+        // refundable storage deposit: anyone could fill the contract storage at the contract's cost
+        require!(
+            env::attached_deposit() == PRE_DELEGATE_DEPOSIT,
+            format!(
+                "Attach exactly {} yoctoNEAR (refundable storage deposit)",
+                PRE_DELEGATE_DEPOSIT
+            )
+        );
         // minimal checks to avoid common mistakes (e.g. send with .evmp.near)
         assert!(
             !evm_address.contains("."),
             "evm_address can not contain dots"
         );
         let account_id = env::predecessor_account_id();
+        // an entry that gets overwritten returns its deposit to whoever paid it
+        self.refund_pre_delegation_deposit(&evm_address);
+        self.timestamp_storage
+            .insert(&Self::pre_delegation_paid_key(&evm_address), &1);
         self.evm_pre_delegation
             .insert(evm_address, (account_id.into(), signature));
     }
@@ -30,6 +78,7 @@ impl MetaVoteContract {
     pub fn operator_remove_pre_delegate_evm_address(&mut self, evm_address: String) {
         assert_one_yocto();
         self.assert_operator();
+        self.refund_pre_delegation_deposit(&evm_address);
         self.evm_pre_delegation.remove(&evm_address);
     }
 
@@ -37,6 +86,7 @@ impl MetaVoteContract {
     pub fn operator_confirm_delegated_evm_address(&mut self, evm_address: String) {
         assert_one_yocto();
         self.assert_operator();
+        self.refund_pre_delegation_deposit(&evm_address);
         if let Some(pre_delegation) = self.evm_pre_delegation.remove(&evm_address) {
             let account_id = pre_delegation.0;
             let evm_signature = pre_delegation.1;
