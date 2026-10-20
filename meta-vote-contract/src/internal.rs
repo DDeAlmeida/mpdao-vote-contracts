@@ -444,10 +444,18 @@ impl MetaVoteContract {
         let unbond_days = optional_unbond_days.unwrap_or(0);
         if unbond_days > 0 {
             self.assert_min_deposit_amount(amount);
-            // get beneficiary voter
-            let mut beneficiary_voter = self.internal_get_voter(&voter_id);
+            // The locking position belongs to the beneficiary (receiver_id), not to the account
+            // the claim is taken from. In the delegated path voter_id is the pseudo
+            // [evm].evmp.near account, which nobody can sign for: bonding there froze the rewards.
+            let beneficiary_id = receiver_id.as_str().to_string();
+            let mut beneficiary_voter = self.internal_get_voter(&beneficiary_id);
             // create/update locking position
-            self.deposit_locking_position(amount, unbond_days, &voter_id, &mut beneficiary_voter);
+            self.deposit_locking_position(
+                amount,
+                unbond_days,
+                &beneficiary_id,
+                &mut beneficiary_voter,
+            );
             // return 0
             PromiseOrValue::Value(0)
         } else {

@@ -21,6 +21,8 @@ mod constants;
 mod deposit;
 mod evm_delegate;
 mod internal;
+#[cfg(test)]
+mod tests_claim_bond;
 mod locking_position;
 mod migrate;
 mod timestamp_utils;
