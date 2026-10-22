@@ -22,6 +22,8 @@ mod vote;
 mod vote_counting;
 mod voter;
 #[cfg(test)]
+mod tests_create_refund;
+#[cfg(test)]
 mod tests_mpip;
 
 #[near_bindgen]
@@ -231,6 +233,7 @@ impl MpipContract {
                     .with_static_gas(GAS_FOR_RESOLVE_VOTE)
                     .create_proposal_callback(
                         env::predecessor_account_id(),
+                        U128(env::attached_deposit()),
                         title,
                         short_description,
                         body,
@@ -240,21 +243,51 @@ impl MpipContract {
             );
     }
 
+    /// `deposit` is the NEAR the proposer attached to create_proposal. It is kept (up to
+    /// mpip_storage_near) only when the proposal is created. If the voting power could not be read
+    /// or is below the threshold, the whole deposit goes back to the proposer, and anything above
+    /// mpip_storage_near is returned in every case. Returns the new id, or None when refunded.
     #[private]
     pub fn create_proposal_callback(
         &mut self,
         creator_id: AccountId,
+        deposit: U128,
         title: String,
         short_description: String,
         body: String,
         data: String,
         extra: String,
-    ) -> MpipId {
-        let total_v_power = self.internal_get_user_total_voting_power_from_promise();
-        self.assert_proposal_threshold(total_v_power);
-        let id = self.proposals.len() as MpipId;
-        self.internal_create_proposal(id, creator_id, title, short_description, body, data, extra);
-        id
+    ) -> Option<MpipId> {
+        let deposit = deposit.0;
+        let voting_power = self.internal_try_get_user_total_voting_power_from_promise();
+        match voting_power {
+            Some(power) if self.internal_check_proposal_threshold(power) => {
+                let id = self.proposals.len() as MpipId;
+                self.internal_create_proposal(
+                    id,
+                    creator_id.clone(),
+                    title,
+                    short_description,
+                    body,
+                    data,
+                    extra,
+                );
+                let overpayment = deposit.saturating_sub(self.mpip_storage_near);
+                if overpayment > 0 {
+                    near_sdk::Promise::new(creator_id).transfer(overpayment);
+                }
+                Some(id)
+            }
+            _ => {
+                near_sdk::log!(
+                    "Proposal not created for {} (voting power unavailable or below threshold), refunding {} yoctoNEAR",
+                    creator_id,
+                    deposit
+                );
+                near_sdk::Promise::new(creator_id).transfer(deposit);
+                None
+            }
+        }
     }
 
     pub fn cancel_proposal(&mut self, mpip_id: MpipId) {
