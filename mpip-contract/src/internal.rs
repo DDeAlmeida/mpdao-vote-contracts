@@ -185,6 +185,24 @@ impl MpipContract {
         }
     }
 
+    /// Same as internal_get_user_total_voting_power_from_promise, but returns None instead of
+    /// panicking when the meta-vote call failed or its answer cannot be read
+    pub(crate) fn internal_try_get_user_total_voting_power_from_promise(&self) -> Option<Balance> {
+        require!(
+            env::promise_results_count() == 1,
+            "This is a callback method."
+        );
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(result) => {
+                near_sdk::serde_json::from_slice::<U128>(&result)
+                    .ok()
+                    .map(|power| power.0)
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn internal_get_quorum(&self, total_voting_power: u128) -> u128 {
         total_voting_power * u128::from(self.quorum_floor) / 100 / 100
     }
