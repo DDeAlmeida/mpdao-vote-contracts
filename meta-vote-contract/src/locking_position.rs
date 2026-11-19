@@ -80,6 +80,31 @@ impl MetaVoteContract {
         self.total_voting_power += voting_power;
     }
 
+    /// Used when realizing an EVM mirror onto its delegate: moves an existing position, so it must
+    /// never revert on the slot limit (the delegate's slots can be filled by gifted locks) nor on the
+    /// unbond bounds. Merges into a lock of the same period or appends a new one.
+    pub(crate) fn move_locking_position_onto(
+        &mut self,
+        voter: &mut Voter,
+        mpdao_amount: MpDAOAmount,
+        unbond_days: Days,
+    ) {
+        match voter.find_locked_position(unbond_days) {
+            Some(index) => self.increase_locking_position(voter, index, mpdao_amount, unbond_days),
+            None => {
+                let voting_power = utils::calculate_voting_power(mpdao_amount, unbond_days);
+                voter.locking_positions.push(&LockingPosition::new(
+                    mpdao_amount,
+                    unbond_days,
+                    voting_power,
+                    None,
+                ));
+                voter.available_voting_power += voting_power;
+                self.total_voting_power += voting_power;
+            }
+        }
+    }
+
     pub(crate) fn internal_create_locking_position(
         &mut self,
         voter: &mut Voter,
@@ -116,6 +141,13 @@ impl MetaVoteContract {
             "Unbound period must be between {} and {} days",
             self.min_unbond_period,
             self.max_unbond_period
+        );
+
+        // Nobody can lock mpDAO into a `{eth}.evmp.near` mirror: those accounts are written only by
+        // the operator (`operator_mirror_lps`). `beneficiary` / gifts could otherwise write there.
+        assert!(
+            !voter_id.ends_with(".evmp.near"),
+            "Cannot lock into an EVM mirror account"
         );
 
         match voter.find_locked_position(unbond_days) {

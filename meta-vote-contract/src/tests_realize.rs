@@ -116,3 +116,60 @@ fn second_realize_reverts() {
     contract.realize_mirror(ETH.to_string());
     contract.realize_mirror(ETH.to_string());
 }
+
+// ---- gifts into EVM mirrors / realize with full delegate slots ----
+
+use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
+
+fn gift(contract: &mut MetaVoteContract, to: &str, days: u16) {
+    testing_env!(context("mpdao.near").build());
+    contract.ft_on_transfer(
+        acct("attacker.near"),
+        U128(ONE_MPDAO),
+        format!("[\"{to}\",{days}]"),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Cannot lock into an EVM mirror account")]
+fn cannot_gift_a_lock_into_an_evm_mirror() {
+    let mut contract = new_contract();
+    mirror(&mut contract, ONE_MPDAO);
+    gift(&mut contract, &pseudo(), 60);
+}
+
+#[test]
+#[should_panic(expected = "Cannot lock into an EVM mirror account")]
+fn cannot_use_beneficiary_to_lock_into_an_evm_mirror() {
+    let mut contract = new_contract();
+    mirror(&mut contract, ONE_MPDAO);
+    testing_env!(context("mpdao.near").build());
+    contract.ft_on_transfer(
+        acct("attacker.near"),
+        U128(ONE_MPDAO),
+        format!("{{\"days\":60,\"beneficiary\":\"{}\"}}", pseudo()),
+    );
+}
+
+#[test]
+fn realize_still_works_when_the_delegate_slots_were_filled_by_gifts() {
+    let mut contract = new_contract();
+    mirror(&mut contract, 5 * ONE_MPDAO); // mirror lock of 30 days
+    link_delegate(&mut contract, "alice.near");
+    // attacker fills all 5 slots of the delegate with tiny gifts at other periods
+    for days in [60u16, 90, 120, 150, 180] {
+        gift(&mut contract, "alice.near", days);
+    }
+    assert_eq!(contract.get_voter_info(&"alice.near".to_string()).locking_positions.len(), 5);
+
+    testing_env!(context("operator.near").build());
+    contract.realize_mirror(ETH.to_string());
+
+    assert!(contract.is_eth_mirror_realized(ETH.to_string()));
+    let alice = contract.get_voter_info(&"alice.near".to_string());
+    assert_eq!(alice.locking_positions.len(), 6);
+    assert!(alice
+        .locking_positions
+        .iter()
+        .any(|p| p.locking_period == 30 && p.amount.0 == 5 * ONE_MPDAO));
+}

@@ -53,7 +53,7 @@ impl MetaVoteContract {
 
         let mut delegate = self.internal_get_voter(&delegate_id);
         for (amount, days) in snaps {
-            self.deposit_locking_position(amount, days, &delegate_id, &mut delegate);
+            self.move_locking_position_onto(&mut delegate, amount, days);
         }
 
         for (address, object, power, timestamp) in vote_snaps {
