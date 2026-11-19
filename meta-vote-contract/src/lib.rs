@@ -34,6 +34,8 @@ mod tests_unlock;
 #[cfg(test)]
 mod tests_realize;
 #[cfg(test)]
+mod tests_votes_view;
+#[cfg(test)]
 mod tests_withdraw;
 mod locking_position;
 mod migrate;
@@ -694,6 +696,18 @@ impl MetaVoteContract {
         let mut votes_for_address =
             voter.get_vote_position_for_address(&voter_id, &contract_address);
         let mut votes = votes_for_address.get(&votable_object_id).unwrap_or(0_u128);
+
+        // A vote on a NEW object must carry real weight: votes of 1 unit on thousands of junk
+        // objects made the (unpaginated) vote views fail and cannot be removed by the operator.
+        if votes == 0 {
+            require!(
+                voting_power >= self.min_deposit_amount,
+                format!(
+                    "A vote on a new object must be at least {} voting power",
+                    self.min_deposit_amount
+                )
+            );
+        }
 
         voter.available_voting_power -= voting_power;
         votes += voting_power;

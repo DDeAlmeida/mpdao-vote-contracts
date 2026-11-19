@@ -306,41 +306,55 @@ impl MetaVoteContract {
 
     // votes by app (contract)
     // returns [[votable_bj_id, vote_amount],[votable_bj_id, vote_amount]...]
-    pub fn get_votes_by_app(&self, app_or_contract_address: String) -> Vec<(String, U128String)> {
-        let objects = self
-            .votes
-            .get(&app_or_contract_address)
-            .unwrap_or(UnorderedMap::new(StorageKey::Votes));
-
-        let mut results = Vec::new();
-        for (id, voting_power) in objects.iter() {
-            results.push((id, voting_power.into()))
+    // Paginated: `from_index` (default 0) and `limit` (default DEFAULT_VIEW_LIMIT). The view used to
+    // iterate every object, so thousands of junk objects made it fail with GasLimitExceeded.
+    pub fn get_votes_by_app(
+        &self,
+        app_or_contract_address: String,
+        from_index: Option<u64>,
+        limit: Option<u64>,
+    ) -> Vec<(String, U128String)> {
+        match self.votes.get(&app_or_contract_address) {
+            None => Vec::new(),
+            Some(objects) => Self::page_of_objects(&objects, from_index, limit)
+                .into_iter()
+                .map(|(id, power)| (id, power.into()))
+                .collect(),
         }
-        results
     }
 
-    // votes by app (deprecated, use get_votes_by_app)
+    /// number of votable objects with votes under this app/contract (for paging)
+    pub fn get_votes_by_app_count(&self, app_or_contract_address: String) -> u64 {
+        self.votes
+            .get(&app_or_contract_address)
+            .map(|objects| objects.len())
+            .unwrap_or(0)
+    }
+
+    // votes by app (deprecated, use get_votes_by_app). Paginated like get_votes_by_app; the page
+    // is sorted by current_votes.
     pub fn get_votes_by_contract(
         &self,
         contract_address: ContractAddress,
+        from_index: Option<u64>,
+        limit: Option<u64>,
     ) -> Vec<VotableObjectJSON> {
-        let objects = self
-            .votes
-            .get(&contract_address)
-            .unwrap_or(UnorderedMap::new(StorageKey::Votes));
-
-        let mut results: Vec<VotableObjectJSON> = Vec::new();
-        for (id, applied_voting_power) in objects.iter() {
-            results.push(VotableObjectJSON {
-                votable_contract: contract_address.to_string(),
-                id,
-                current_votes: applied_voting_power.into(),
-                vote_timestamp: 0, // no specific user, send zero
-            })
-        }
+        let mut results: Vec<VotableObjectJSON> = match self.votes.get(&contract_address) {
+            None => Vec::new(),
+            Some(objects) => Self::page_of_objects(&objects, from_index, limit)
+                .into_iter()
+                .map(|(id, applied_voting_power)| VotableObjectJSON {
+                    votable_contract: contract_address.to_string(),
+                    id,
+                    current_votes: applied_voting_power.into(),
+                    vote_timestamp: 0, // no specific user, send zero
+                })
+                .collect(),
+        };
         results.sort_by_key(|v| v.current_votes.0);
         results
     }
+
     // given a voter, total votes per app + object_id
     pub fn get_votes_by_voter(&self, voter_id: VoterId) -> Vec<VotableObjectJSON> {
         let mut results: Vec<VotableObjectJSON> = Vec::new();
@@ -390,5 +404,29 @@ impl MetaVoteContract {
     // kept to not break public interface
     pub fn get_accumulated_distributed_for_claims(&self) -> U128String {
         self.get_accumulated_mpdao_distributed_for_claims()
+    }
+}
+
+const DEFAULT_VIEW_LIMIT: u64 = 500;
+
+impl MetaVoteContract {
+    fn page_of_objects(
+        objects: &UnorderedMap<String, u128>,
+        from_index: Option<u64>,
+        limit: Option<u64>,
+    ) -> Vec<(String, u128)> {
+        let from = from_index.unwrap_or(0);
+        let limit = limit.unwrap_or(DEFAULT_VIEW_LIMIT).min(DEFAULT_VIEW_LIMIT);
+        let keys = objects.keys_as_vector();
+        let end = std::cmp::min(keys.len(), from.saturating_add(limit));
+        let mut page = Vec::new();
+        let mut i = from;
+        while i < end {
+            let id = keys.get(i).unwrap();
+            let power = objects.get(&id).unwrap_or(0);
+            page.push((id, power));
+            i += 1;
+        }
+        page
     }
 }
